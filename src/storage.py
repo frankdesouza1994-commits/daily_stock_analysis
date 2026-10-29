@@ -1028,6 +1028,20 @@ class AlertCooldownRecord(Base):
     )
 
 
+class CustomDashboardRecord(Base):
+    """User-editable dashboard document (Web UI and external agents such as openclaw)."""
+
+    __tablename__ = 'custom_dashboards'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    slug = Column(String(64), nullable=False, unique=True, index=True)
+    document = Column(Text, nullable=False, default='{}')
+    version = Column(Integer, nullable=False, default=1)
+    updated_by = Column(String(64))
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class DecisionSignalRecord(Base):
     """Persisted AI decision signal asset for Issue #1390 P1."""
 
