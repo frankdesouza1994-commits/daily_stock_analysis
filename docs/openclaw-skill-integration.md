@@ -224,7 +224,7 @@ curl -X DELETE '{DSA_BASE_URL}/api/v1/dashboard/widgets/moutai-advice?actor=open
 
 ### 看板 SKILL.md 示例
 
-将以下内容保存到 `~/.openclaw/skills/dsa-dashboard/SKILL.md`（与上文分析 Skill 共用 `DSA_BASE_URL`）：
+将以下内容保存到 `~/.openclaw/skills/dsa-dashboard/SKILL.md`（与上文分析 Skill 共用 `DSA_BASE_URL`）。更完整的英文版（含安装步骤、401/404 排查与「分析后写入看板」流程）见仓库内 [`docs/openclaw/dsa-dashboard/SKILL.md`](openclaw/dsa-dashboard/SKILL.md)，可直接交给 openclaw 安装：
 
 ```markdown
 ---
