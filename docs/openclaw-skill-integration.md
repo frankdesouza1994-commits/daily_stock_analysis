@@ -22,6 +22,7 @@
 | `/api/v1/analysis/status/{task_id}` | GET | 异步任务状态 |
 | `/api/v1/agent/chat` | POST | Agent 策略问股（需 `AGENT_MODE=true`） |
 | `/api/health` | GET | 健康检查 |
+| `/api/v1/dashboard` | GET / PUT / PATCH | 可编辑看板（见下文「可编辑看板」） |
 
 ### 触发分析请求体
 
@@ -168,6 +169,92 @@ curl -X POST {DSA_BASE_URL}/api/v1/agent/chat \
 
 响应包含 `content`（分析结论）和 `session_id`（用于多轮对话）。
 
+## 可编辑看板（openclaw 读写）
+
+DSA 提供一个持久化的自定义看板，Web 端位于侧边栏「看板」（`/dashboard`），openclaw 可通过 REST API 读取并编辑同一份内容。Web 页面每 15 秒自动同步一次，openclaw 写入后无需手动刷新。
+
+### 接口
+
+| 接口 | 方法 | 用途 |
+|------|------|------|
+| `/api/v1/dashboard` | GET | 读取看板（标题、描述、有序组件列表、`version`） |
+| `/api/v1/dashboard` | PUT | 整体替换看板（`title`、`description`、`widgets`） |
+| `/api/v1/dashboard` | PATCH | 仅修改 `title` / `description` |
+| `/api/v1/dashboard/widgets` | POST | 添加组件，可选 `position` 指定插入位置（默认追加到末尾） |
+| `/api/v1/dashboard/widgets/{id}` | PATCH | 修改组件；`data` 浅合并到原数据，`position` 可移动组件 |
+| `/api/v1/dashboard/widgets/{id}` | DELETE | 删除组件（`expected_version`、`actor` 走 query 参数） |
+
+所有写接口都接受可选字段：
+
+- `actor`：写入方标识（建议 openclaw 固定传 `"openclaw"`），在 Web 端显示为「最近由 openclaw 更新」
+- `expected_version`：期望的当前版本号；与服务端不一致时返回 `409 version_conflict`（`detail.current_version` 为最新版本），用于避免覆盖用户刚在 Web 上做的修改。不传则直接写入
+
+每次写入成功都会返回完整看板，`version` 加 1。从未保存过的看板 `version` 为 `0`。
+
+### 组件类型
+
+| `type` | `data` 字段 | 说明 |
+|--------|-------------|------|
+| `markdown` | `content`（≤20000 字符） | Markdown 文本，支持 GFM 表格 |
+| `metric` | `value`（字符串或数字）、`hint`、`tone`（`default` / `primary` / `success` / `warning` / `danger`） | 单个大号指标 |
+| `stock_list` | `items: [{code, name?, note?}]`（≤100 项） | 股票列表 |
+
+公共字段：`id`（不传则自动生成，≤64 字符，同一看板内唯一）、`title`（≤120 字符）、`width`（`sm`=1/4、`md`=1/2、`lg`=3/4、`full`=整行，默认 `md`）。一个看板最多 50 个组件。`data` 中出现未知字段会返回 `400 validation_error`。
+
+### 示例
+
+```bash
+# 读取
+curl {DSA_BASE_URL}/api/v1/dashboard
+
+# 添加一个指标组件，并指定 id 方便后续更新
+curl -X POST {DSA_BASE_URL}/api/v1/dashboard/widgets \
+  -H 'Content-Type: application/json' \
+  -d '{"id": "moutai-advice", "type": "metric", "title": "茅台建议", "width": "sm",
+       "data": {"value": "持有", "hint": "情绪分 75", "tone": "primary"}, "actor": "openclaw"}'
+
+# 只更新数值，保留 hint / tone
+curl -X PATCH {DSA_BASE_URL}/api/v1/dashboard/widgets/moutai-advice \
+  -H 'Content-Type: application/json' \
+  -d '{"data": {"value": "加仓"}, "actor": "openclaw"}'
+
+# 删除
+curl -X DELETE '{DSA_BASE_URL}/api/v1/dashboard/widgets/moutai-advice?actor=openclaw'
+```
+
+### 看板 SKILL.md 示例
+
+将以下内容保存到 `~/.openclaw/skills/dsa-dashboard/SKILL.md`（与上文分析 Skill 共用 `DSA_BASE_URL`）。更完整的英文版（含安装步骤、401/404 排查与「分析后写入看板」流程）见仓库内 [`docs/openclaw/dsa-dashboard/SKILL.md`](openclaw/dsa-dashboard/SKILL.md)，可直接交给 openclaw 安装：
+
+```markdown
+---
+name: dsa-dashboard
+description: 读取和编辑 daily_stock_analysis 的自定义看板。当用户说「把分析结果放到看板」「更新看板」「看板上加一个…」「删掉看板上的…」时使用。
+metadata:
+  {"openclaw": {"requires": {"env": ["DSA_BASE_URL"]}, "primaryEnv": "DSA_BASE_URL"}}
+---
+
+## 工作流程
+
+1. 先 `GET {DSA_BASE_URL}/api/v1/dashboard`，记下 `version` 和现有组件的 `id`、`type`、`title`。
+2. 根据用户意图选择操作：
+   - 新增：`POST /api/v1/dashboard/widgets`，组件类型只能是 `markdown`、`metric`、`stock_list`；给组件起一个稳定、可读的 `id`（如 `moutai-advice`）以便之后更新。
+   - 修改：`PATCH /api/v1/dashboard/widgets/{id}`，`data` 只需传要改的字段。
+   - 删除：`DELETE /api/v1/dashboard/widgets/{id}`。
+   - 重新排版或批量重建：`PUT /api/v1/dashboard`，必须带上要保留的全部组件。
+3. 每次写入都传 `"actor": "openclaw"` 和第 1 步拿到的 `"expected_version"`。
+4. 若返回 409 `version_conflict`，说明用户刚在 Web 上改过，重新 GET 后在最新内容上重做修改。
+5. 400 时按 `message` 修正字段（常见：未知 `type`、`tone` 取值错误、`stock_list.items` 缺少 `code`、`id` 重复）。
+6. 完成后告诉用户改了哪些组件，并提示在 DSA Web 的「看板」页面查看。
+
+## 组件 data 格式
+
+- markdown: {"content": "..."}
+- metric: {"value": "12.3%", "hint": "可选说明", "tone": "default|primary|success|warning|danger"}
+- stock_list: {"items": [{"code": "600519", "name": "贵州茅台", "note": "可选备注"}]}
+- width: sm | md | lg | full
+```
+
 ## 故障排查
 
 | 现象 | 可能原因 | 处理建议 |
@@ -180,4 +267,10 @@ curl -X POST {DSA_BASE_URL}/api/v1/agent/chat \
 
 ## 认证说明
 
-默认情况下 DSA API 无需认证。若在 `.env` 中启用了 `ADMIN_AUTH_ENABLED=true`，则需在 Skill 调用时携带登录后获得的 Cookie，具体方式取决于 openclaw 的 HTTP 工具能力（当前 API 仅支持 Cookie 认证，不支持 Bearer Token）。
+默认情况下 DSA API 无需认证。若在 `.env` 中启用了 `ADMIN_AUTH_ENABLED=true`，则需在 Skill 调用时携带登录后获得的 Cookie，具体方式取决于 openclaw 的 HTTP 工具能力（当前 API 仅支持 Cookie 认证，不支持 Bearer Token）。例如使用 curl 时可先登录并保存 Cookie，再在后续请求（包括看板读写）中复用：
+
+```bash
+curl -c dsa.cookie -X POST {DSA_BASE_URL}/api/v1/auth/login \
+  -H 'Content-Type: application/json' -d '{"password": "<管理员密码>"}'
+curl -b dsa.cookie {DSA_BASE_URL}/api/v1/dashboard
+```
